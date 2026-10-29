@@ -1,19 +1,23 @@
-"""스텔라이브 다시보기 채널에 새 영상이 올라오면 카카오톡 '나에게 보내기'로 알린다.
+"""스텔라이브 다시보기 채널에 새 영상이 올라오면 카카오톡 '나에게 보내기'와 텔레그램 봇으로 알린다.
+값이 들어 있는 쪽으로만 보낸다 (둘 다 있으면 둘 다).
 
 환경 변수
   KAKAO_REST_KEY       카카오 앱의 REST API 키
   KAKAO_REFRESH_TOKEN  get_token.py로 받은 리프레시 토큰
   KAKAO_CLIENT_SECRET  (선택) 앱에서 Client Secret을 켠 경우만
+  TELEGRAM_BOT_TOKEN   BotFather가 준 봇 토큰
+  TELEGRAM_CHAT_ID     get_telegram_id.py로 확인한 채팅 ID
 
 실행
   python check.py          새 영상 확인 후 알림
-  python check.py --test   카톡 시험 메시지 1개 보내기
-  python check.py --dry    카톡 없이 확인만 (seen.json 안 바꿈)
+  python check.py --test   시험 메시지 1개 보내기
+  python check.py --dry    알림 없이 확인만 (seen.json 안 바꿈)
 """
 import json
 import os
 import re
 import sys
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -33,10 +37,14 @@ HEADERS = {
 def fetch_videos(channel_id):
     # YouTube RSS 피드가 404를 내서(2026-10 확인) 채널의 '동영상' 탭을 직접 읽는다
     url = f"https://www.youtube.com/channel/{channel_id}/videos"
-    req = urllib.request.Request(url, headers=HEADERS)
-    html = urllib.request.urlopen(req, timeout=30).read().decode("utf-8")
-    m = re.search(r"var ytInitialData = (\{.*?\});</script>", html)
-    if not m:
+    for attempt in range(3):  # 가끔 다른 모양의 페이지가 와서 몇 번 다시 받는다
+        req = urllib.request.Request(url, headers=HEADERS)
+        html = urllib.request.urlopen(req, timeout=30).read().decode("utf-8")
+        m = re.search(r'(?:var ytInitialData|window\["ytInitialData"\]) = (\{.*?\});\s*</script>', html)
+        if m:
+            break
+        time.sleep(3)
+    else:
         raise RuntimeError("페이지 구조를 읽지 못함")
 
     videos = []
@@ -103,12 +111,56 @@ def send_kakao(token, text, url):
     )
 
 
+def send_telegram(text, url):
+    token = os.environ["TELEGRAM_BOT_TOKEN"]
+    body = json.dumps({
+        "chat_id": os.environ["TELEGRAM_CHAT_ID"],
+        "text": f"{text}\n{url}",
+        "reply_markup": {"inline_keyboard": [[{"text": "영상 보기", "url": url}]]},
+    }).encode()
+    req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=body,
+                                 headers={"Content-Type": "application/json"})
+    urllib.request.urlopen(req, timeout=30).read()
+
+
+def make_senders():
+    """설정된 알림 방법마다 (이름, 보내기 함수)를 만든다. 카카오 토큰은 처음 보낼 때 받는다."""
+    senders = []
+    if os.environ.get("KAKAO_REST_KEY") and os.environ.get("KAKAO_REFRESH_TOKEN"):
+        token = []
+
+        def kakao(text, url):
+            if not token:
+                token.append(get_access_token())
+            send_kakao(token[0], text, url)
+        senders.append(("카톡", kakao))
+    if os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID"):
+        senders.append(("텔레그램", send_telegram))
+    return senders
+
+
+def notify(senders, text, url):
+    """하나라도 보내지면 True."""
+    ok = False
+    for name, send in senders:
+        try:
+            send(text, url)
+            ok = True
+        except Exception as e:
+            print(f"{name} 전송 실패 ({e})")
+    return ok
+
+
 def main():
     args = sys.argv[1:]
+    senders = make_senders()
     if "--test" in args:
-        send_kakao(get_access_token(), "[스텔라이브 다시보기 알림] 시험 메시지입니다.",
-                   "https://www.youtube.com/@stellive_official")
-        print("시험 메시지를 보냈습니다.")
+        if not senders:
+            sys.exit("알림 설정(카톡/텔레그램 값)이 없습니다.")
+        if not notify(senders, "[스텔라이브 다시보기 알림] 시험 메시지입니다.",
+                      "https://www.youtube.com/@stellive_official"):
+            sys.exit("시험 메시지를 보내지 못했습니다.")
+        print("시험 메시지를 보냈습니다:", ", ".join(n for n, _ in senders))
         return
 
     dry = "--dry" in args
@@ -134,13 +186,9 @@ def main():
             new_items.append((name, cid, v))
 
     if new_items and not dry:
-        token = get_access_token()
         for name, cid, v in new_items:
-            try:
-                send_kakao(token, f"[{name} 다시보기]\n{v['title']}", v["url"])
-            except Exception as e:
-                # 실패한 영상은 기록하지 않아 다음 실행 때 다시 시도
-                print(f"{name}: 카톡 전송 실패 ({e})")
+            # 모두 실패한 영상은 기록하지 않아 다음 실행 때 다시 시도
+            if not notify(senders, f"[{name} 다시보기]\n{v['title']}", v["url"]):
                 continue
             seen[cid] = ([v["id"]] + seen[cid])[:KEEP]
             print(f"알림 보냄: {name} - {v['title']}")
