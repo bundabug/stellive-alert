@@ -1,0 +1,51 @@
+name: 스텔라이브 다시보기 확인
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"  # 10분마다 (GitHub 사정으로 몇 분 늦어질 수 있음)
+  workflow_dispatch:
+    inputs:
+      test:
+        description: "카톡 시험 메시지 보내기"
+        type: boolean
+        default: false
+
+concurrency:
+  group: check
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 새 영상 확인 / 알림
+        env:
+          KAKAO_REST_KEY: ${{ secrets.KAKAO_REST_KEY }}
+          KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
+          KAKAO_CLIENT_SECRET: ${{ secrets.KAKAO_CLIENT_SECRET }}
+        run: python check.py ${{ inputs.test && '--test' || '' }}
+
+      - name: 카카오 리프레시 토큰 갱신
+        if: always() && hashFiles('new_refresh_token.txt') != ''
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          gh secret set KAKAO_REFRESH_TOKEN < new_refresh_token.txt
+          rm new_refresh_token.txt
+
+      - name: 기록 저장
+        if: always() && hashFiles('seen.json') != ''
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898233+github-actions[bot]@users.noreply.github.com"
+          git add seen.json
+          git diff --cached --quiet || (git commit -m "기록 갱신" && git push)
