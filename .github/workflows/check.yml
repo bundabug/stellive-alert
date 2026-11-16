@@ -30,7 +30,8 @@ jobs:
       - name: 새 영상 확인 / 알림
         env:
           KAKAO_REST_KEY: ${{ secrets.KAKAO_REST_KEY }}
-          KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
+          # 카톡 알림 끔 (2026-11-16). 다시 켜려면 아래 줄 앞의 # 를 지운다
+          # KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
           KAKAO_CLIENT_SECRET: ${{ secrets.KAKAO_CLIENT_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
